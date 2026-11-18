@@ -103,9 +103,14 @@
       </div>
 
       <div class="setting">
-        <label for="tray-display">Menu bar shows</label>
+        <label for="tray-display" id="tray-display-label">Menu bar shows</label>
+        <!-- data-platforms: where an option is offered; app.js removes the
+             rest. Without it, an option is offered everywhere. -->
         <select id="tray-display" class="input">
-          <option value="both">Session and weekly</option>
+          <option value="both">Both, stacked</option>
+          <option value="compact" data-platforms="windows">Both, stacked compact</option>
+          <option value="separate" data-platforms="windows macos">Both, two icons</option>
+          <option value="alternate" data-platforms="windows macos">Both, alternating</option>
           <option value="session">Session only</option>
           <option value="weekly">Weekly only</option>
         </select>

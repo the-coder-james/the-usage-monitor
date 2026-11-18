@@ -17,9 +17,16 @@ pub enum TrayDisplay {
     Session,
     /// The 7-day weekly window only.
     Weekly,
-    /// Both, stacked.
+    /// Both, stacked in one icon.
     #[default]
     Both,
+    /// Both, stacked tighter with no divider: slightly larger digits. Only
+    /// differs from `Both` on Windows, where the icon has a divider.
+    Compact,
+    /// Both, one icon each, so each number gets a whole icon to itself.
+    Separate,
+    /// One icon that switches between session and weekly.
+    Alternate,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -188,5 +195,25 @@ mod tests {
         };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn every_offered_tray_layout_parses() {
+        // The values the <select> in index.html sends; a typo there would
+        // silently fail to save.
+        let html = include_str!("../../../ui/index.html");
+        let start = html.find(r#"id="tray-display""#).expect("tray select");
+        let end = start + html[start..].find("</select>").expect("select end");
+        let values: Vec<&str> = html[start..end]
+            .split(r#"value=""#)
+            .skip(1)
+            .filter_map(|v| v.split('"').next())
+            .collect();
+        assert_eq!(values.len(), 6, "{values:?}");
+        for value in values {
+            let json = format!(r#"{{"trayDisplay": "{value}"}}"#);
+            let s: Settings = serde_json::from_str(&json).unwrap();
+            assert_eq!(serde_json::to_value(s.tray_display).unwrap(), value, "{value}");
+        }
     }
 }

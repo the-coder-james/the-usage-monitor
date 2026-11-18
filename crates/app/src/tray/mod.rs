@@ -16,38 +16,114 @@ pub mod linux;
 pub mod render;
 pub mod sizing;
 
+use crate::settings::TrayDisplay;
 use crate::state::AppSnapshot;
-use render::Row;
+use render::{Row, RowIcon};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::image::Image;
 use tauri::tray::TrayIcon;
 
-/// Rows for the current snapshot, honouring the display preference.
-fn rows_for(snapshot: &AppSnapshot) -> Vec<Row> {
-    use crate::settings::TrayDisplay;
+/// The tray icon that always exists.
+pub const MAIN_ID: &str = "main";
 
+/// The second icon, used only by the "two icons" layout. Not created on Linux,
+/// whose tray shows both numbers as text.
+#[cfg(not(target_os = "linux"))]
+pub const SECOND_ID: &str = "second";
+
+/// How long the "alternating" layout shows each metric.
+#[cfg(not(target_os = "linux"))]
+pub const ALTERNATE_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Which metric the "alternating" layout is showing now.
+static ALTERNATE_SHOWS_WEEKLY: AtomicBool = AtomicBool::new(false);
+
+/// Moves the "alternating" layout on to the other metric.
+#[cfg(not(target_os = "linux"))]
+pub fn advance_alternation() {
+    ALTERNATE_SHOWS_WEEKLY.fetch_xor(true, Ordering::SeqCst);
+}
+
+/// What each tray icon should show: one entry per icon, top row first.
+pub struct Plan {
+    pub icons: Vec<Vec<Row>>,
+    /// Stack the rows tighter, with no divider (Windows).
+    pub compact: bool,
+}
+
+/// The plan for the current snapshot and layout setting.
+pub fn plan(snapshot: &AppSnapshot) -> Plan {
+    let display = supported(crate::settings::get().tray_display);
+    plan_for(snapshot, display, ALTERNATE_SHOWS_WEEKLY.load(Ordering::SeqCst))
+}
+
+/// Maps a layout this platform cannot show onto the stacked default.
+///
+/// The settings panel only offers what the platform supports, so this only
+/// matters for a hand-edited file or a settings file copied between machines.
+fn supported(display: TrayDisplay) -> TrayDisplay {
+    match display {
+        // Linux shows both numbers as tray text whatever the layout.
+        TrayDisplay::Compact | TrayDisplay::Separate | TrayDisplay::Alternate
+            if cfg!(target_os = "linux") =>
+        {
+            TrayDisplay::Both
+        }
+        // Only the Windows icon has a divider to drop.
+        TrayDisplay::Compact if !cfg!(windows) => TrayDisplay::Both,
+        other => other,
+    }
+}
+
+fn plan_for(snapshot: &AppSnapshot, display: TrayDisplay, alternate_weekly: bool) -> Plan {
     // Only blank the tray when there is genuinely no reading. A stale poll
     // still has last-known numbers worth showing — at 100% usage that reading
     // is precisely what explains why requests are failing. The popover's
     // notice says it is not fresh.
     let disconnected = !has_reading(snapshot);
-    let row = |percent: f64| {
-        if disconnected {
-            Row::disconnected()
-        } else {
-            Row::usage(percent)
-        }
+    let row = |percent: f64, icon: RowIcon| {
+        let row = if disconnected { Row::disconnected() } else { Row::usage(percent) };
+        // Icons replace the SF Symbols the Swift app used (timer / calendar).
+        row.with_icon(icon)
     };
+    let session = || row(snapshot.session_percent, RowIcon::Session);
+    let weekly = || row(snapshot.weekly_percent, RowIcon::Weekly);
 
-    // Icons replace the SF Symbols the Swift app used (timer / calendar).
-    use render::RowIcon;
-    match crate::settings::get().tray_display {
-        TrayDisplay::Session => vec![row(snapshot.session_percent).with_icon(RowIcon::Session)],
-        TrayDisplay::Weekly => vec![row(snapshot.weekly_percent).with_icon(RowIcon::Weekly)],
-        TrayDisplay::Both => vec![
-            row(snapshot.session_percent).with_icon(RowIcon::Session),
-            row(snapshot.weekly_percent).with_icon(RowIcon::Weekly),
-        ],
-    }
+    let icons = match display {
+        TrayDisplay::Session => vec![vec![session()]],
+        TrayDisplay::Weekly => vec![vec![weekly()]],
+        TrayDisplay::Both | TrayDisplay::Compact => vec![vec![session(), weekly()]],
+        TrayDisplay::Separate => vec![vec![session()], vec![weekly()]],
+        TrayDisplay::Alternate if alternate_weekly => vec![vec![weekly()]],
+        TrayDisplay::Alternate => vec![vec![session()]],
+    };
+    Plan { icons, compact: display == TrayDisplay::Compact }
+}
+
+/// Weekly's colour in the normal range on Windows: a blue that holds up on
+/// both light and dark taskbars.
+#[cfg(any(windows, test))]
+const WEEKLY_NORMAL_RGB: [u8; 3] = [0x3A, 0x86, 0xF0];
+
+/// Windows: tells session and weekly apart by colour.
+///
+/// The square Windows icon has no room for the row icons macOS shows, so in
+/// the normal (green) range weekly is drawn blue instead. Amber and red are
+/// left alone on both rows: those are warnings, and must look like warnings
+/// whichever metric raised them.
+#[cfg(any(windows, test))]
+fn windows_metric_colours(rows: Vec<Row>) -> Vec<Row> {
+    use claudeusage_core::UsageLevel;
+
+    let green = UsageLevel::for_percent(0.0).rgb();
+    rows.into_iter()
+        .map(|mut row| {
+            if row.icon == Some(RowIcon::Weekly) && row.rgb == green {
+                row.rgb = WEEKLY_NORMAL_RGB;
+            }
+            row
+        })
+        .collect()
 }
 
 /// True when the snapshot holds a usable reading, fresh or not.
@@ -82,9 +158,10 @@ fn tooltip_for(snapshot: &AppSnapshot) -> String {
     )
 }
 
-/// Pushes the current snapshot to the tray.
-pub fn update(tray: &TrayIcon, snapshot: &AppSnapshot) {
-    let rows = rows_for(snapshot);
+/// Draws `rows` into one tray icon. `compact` only affects Windows.
+pub fn update(tray: &TrayIcon, rows: &[Row], snapshot: &AppSnapshot, compact: bool) {
+    #[cfg(not(windows))]
+    let _ = compact;
 
     #[cfg(target_os = "linux")]
     {
@@ -118,7 +195,7 @@ pub fn update(tray: &TrayIcon, snapshot: &AppSnapshot) {
 
         let mut last = LAST_BUCKETS.lock().expect("bucket lock");
         if last.as_ref() != Some(&buckets) {
-            let rendered = render::render_at(&rows, sizing::tray_icon_height());
+            let rendered = render::render_at(rows, sizing::tray_icon_height());
             let image = Image::new_owned(rendered.rgba, rendered.width, rendered.height);
             let _ = tray.set_icon(Some(image));
             *last = Some(buckets);
@@ -131,7 +208,17 @@ pub fn update(tray: &TrayIcon, snapshot: &AppSnapshot) {
         // an oversized icon poorly; macOS scales cleanly from a fixed 3x buffer.
         // `sizing` resolves both. Queried per render, so moving between
         // monitors with different scaling re-renders at the right size.
-        let rendered = render::render_at(&rows, sizing::tray_icon_height());
+        //
+        // The Windows slot is also square, so a wide image would be shrunk to
+        // fit it; Windows gets a square, digits-only rendering instead.
+        #[cfg(target_os = "macos")]
+        let rendered = render::render_at(rows, sizing::tray_icon_height());
+        #[cfg(windows)]
+        let rendered = render::render_square(
+            &windows_metric_colours(rows.to_vec()),
+            sizing::tray_icon_height(),
+            compact,
+        );
         let image = Image::new_owned(rendered.rgba, rendered.width, rendered.height);
         let _ = tray.set_icon(Some(image));
 
@@ -158,6 +245,56 @@ mod tests {
             last_updated_ms: Some(1_788_000_000_000),
             ..Default::default()
         }
+    }
+
+    /// The single icon's rows under the default stacked layout.
+    fn rows_for(snapshot: &AppSnapshot) -> Vec<Row> {
+        plan_for(snapshot, TrayDisplay::Both, false).icons.remove(0)
+    }
+
+    fn texts(plan: &Plan) -> Vec<Vec<String>> {
+        plan.icons.iter().map(|icon| icon.iter().map(|r| r.text.clone()).collect()).collect()
+    }
+
+    #[test]
+    fn each_layout_plans_the_right_icons() {
+        let s = healthy();
+        let plan = |d| texts(&plan_for(&s, d, false));
+        assert_eq!(plan(TrayDisplay::Both), vec![vec!["43%", "71%"]]);
+        assert_eq!(plan(TrayDisplay::Compact), vec![vec!["43%", "71%"]]);
+        assert_eq!(plan(TrayDisplay::Session), vec![vec!["43%"]]);
+        assert_eq!(plan(TrayDisplay::Weekly), vec![vec!["71%"]]);
+        // Two icons: one number each, so each gets the whole icon.
+        assert_eq!(plan(TrayDisplay::Separate), vec![vec!["43%"], vec!["71%"]]);
+    }
+
+    #[test]
+    fn alternating_shows_one_metric_at_a_time() {
+        let s = healthy();
+        assert_eq!(texts(&plan_for(&s, TrayDisplay::Alternate, false)), vec![vec!["43%"]]);
+        assert_eq!(texts(&plan_for(&s, TrayDisplay::Alternate, true)), vec![vec!["71%"]]);
+        // The weekly half keeps its identity, so Windows still colours it.
+        let weekly = plan_for(&s, TrayDisplay::Alternate, true);
+        assert_eq!(weekly.icons[0][0].icon, Some(RowIcon::Weekly));
+    }
+
+    #[test]
+    fn only_the_compact_layout_is_compact() {
+        let s = healthy();
+        assert!(plan_for(&s, TrayDisplay::Compact, false).compact);
+        assert!(!plan_for(&s, TrayDisplay::Both, false).compact);
+        assert!(!plan_for(&s, TrayDisplay::Separate, false).compact);
+    }
+
+    #[test]
+    fn unsupported_layouts_fall_back_to_stacked() {
+        let linux = cfg!(target_os = "linux");
+        for d in [TrayDisplay::Separate, TrayDisplay::Alternate] {
+            assert_eq!(supported(d), if linux { TrayDisplay::Both } else { d });
+        }
+        let compact = if cfg!(windows) { TrayDisplay::Compact } else { TrayDisplay::Both };
+        assert_eq!(supported(TrayDisplay::Compact), compact);
+        assert_eq!(supported(TrayDisplay::Session), TrayDisplay::Session);
     }
 
     #[test]
@@ -215,6 +352,26 @@ mod tests {
         let two = render::render_at(&[Row::usage(43.0), Row::usage(71.0)], 54);
         assert_eq!(one.height, two.height, "both fill the same icon box");
         assert!(one.width > two.width, "taller glyphs are also wider");
+    }
+
+    #[test]
+    fn windows_tells_weekly_apart_only_in_the_normal_range() {
+        let colours = |session: f64, weekly: f64| {
+            let snapshot =
+                AppSnapshot { session_percent: session, weekly_percent: weekly, ..healthy() };
+            let rows = windows_metric_colours(rows_for(&snapshot));
+            (rows[0].rgb, rows[1].rgb)
+        };
+        let (green, amber, red) = (
+            claudeusage_core::UsageLevel::for_percent(0.0).rgb(),
+            claudeusage_core::UsageLevel::for_percent(75.0).rgb(),
+            claudeusage_core::UsageLevel::for_percent(95.0).rgb(),
+        );
+
+        assert_eq!(colours(10.0, 40.0), (green, WEEKLY_NORMAL_RGB));
+        // Warnings keep their meaning on both rows.
+        assert_eq!(colours(10.0, 75.0), (green, amber));
+        assert_eq!(colours(95.0, 95.0), (red, red));
     }
 
     #[test]
