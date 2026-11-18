@@ -230,15 +230,17 @@ h1 { font-size: 13px; font-weight: 600; margin: 0; }
   padding: 3px 0;
 }
 
-/* Settings */
+/* Settings, and the History section that shares its disclosure style */
 
-.settings {
+.settings,
+.history {
   border-top: 0.5px solid var(--border);
   padding-top: 10px;
   margin-bottom: 10px;
 }
 
-.settings summary {
+.settings summary,
+.history summary {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -248,7 +250,8 @@ h1 { font-size: 13px; font-weight: 600; margin: 0; }
   list-style: none;
 }
 
-.settings summary::-webkit-details-marker { display: none; }
+.settings summary::-webkit-details-marker,
+.history summary::-webkit-details-marker { display: none; }
 
 .chev {
   font-size: 12px;
@@ -256,7 +259,35 @@ h1 { font-size: 13px; font-weight: 600; margin: 0; }
   transition: transform 140ms;
 }
 
-.settings[open] .chev { transform: rotate(90deg); }
+.settings[open] .chev,
+.history[open] .chev { transform: rotate(90deg); }
+
+/* History sparklines */
+
+.spark { margin-top: 8px; }
+
+.spark-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--fg-tertiary);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 3px;
+}
+
+.spark-svg {
+  display: block;
+  width: 100%;
+  height: 30px;
+  border-radius: 4px;
+  background: var(--bar-track);
+}
+
+/* The viewBox is stretched to the panel width; without this the stroke would
+   stretch with it and thicken unevenly. */
+.spark-svg path { vector-effect: non-scaling-stroke; }
+.spark-svg .spark-line { fill: none; stroke-width: 1.5; stroke-linejoin: round; }
+.spark-svg .spark-area { stroke: none; fill-opacity: 0.18; }
 
 .setting {
   display: flex;

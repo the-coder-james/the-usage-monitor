@@ -6,6 +6,7 @@
 //! Replaces the SwiftUI `MenuBarExtra` host from `ClaudeUsageApp.swift`.
 
 mod autostart;
+mod history;
 mod settings;
 mod state;
 mod tray;
@@ -86,6 +87,13 @@ fn set_login_item(app: tauri::AppHandle, enabled: bool) -> Result<autostart::Log
     autostart::set(&app, enabled)
 }
 
+/// Recorded readings since `since_ms`, for the History sparklines. The popover
+/// asks only while that section is open, so a closed section costs no IPC.
+#[tauri::command]
+fn get_history(since_ms: i64) -> Vec<[i64; 3]> {
+    history::since_ms(since_ms)
+}
+
 /// Sends a sample alert from the Settings panel.
 ///
 /// A real alert only fires on an 80 % crossing, which is a bad moment to learn
@@ -116,6 +124,9 @@ fn quit_app(app: tauri::AppHandle) {
 fn run_poll(app: &tauri::AppHandle, state: &Arc<AppState>) -> bool {
     let succeeded = match state::poll_once(state) {
         PollOutcome::Updated { snapshot, rate_limited } => {
+            // Recorded here rather than in `apply_usage`, so that function's
+            // tests never write to the real history file.
+            history::record(snapshot.session_percent, snapshot.weekly_percent);
             if let Some(alert) = state::apply_usage(state, snapshot, rate_limited) {
                 send_alert(app, alert);
             }
@@ -203,7 +214,8 @@ fn main() {
             set_settings,
             get_login_item,
             set_login_item,
-            send_test_notification
+            send_test_notification,
+            get_history
         ])
         .setup(|app| {
             let state = Arc::new(AppState::new());

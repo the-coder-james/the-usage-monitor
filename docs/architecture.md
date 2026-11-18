@@ -161,6 +161,17 @@ OS config directory. Values are clamped on both load and save — a hand-edited
 The interval is read per tick, so a change applies on the next cycle without
 restarting the poller.
 
+### Usage history
+
+`history.csv` sits next to the settings file: one `epoch_secs,session,weekly`
+line per reading, kept for 8 days, never sent anywhere. Every choice in it is
+about cost. A line is appended only when a percentage changes, or as a 30-minute
+heartbeat; the heartbeat lets the chart tell "nothing changed" apart from "the
+app was not running", and break the line at a real gap. Expired lines leave
+memory at once but leave the file only in batches of 512, via write-then-rename.
+The popover's History section is collapsed by default, and it fetches readings
+only while it is open, so the closed popover makes no extra IPC calls.
+
 ### Launch at login
 
 `tauri-plugin-autostart` registers the app with the OS: a LaunchAgent plist in

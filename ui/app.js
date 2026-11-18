@@ -236,6 +236,100 @@ function renderStatus(snapshot) {
     worst === "operational" ? "All systems operational" : labels[worst] ?? "Service status";
 }
 
+// MARK: - History
+
+const HOUR_MS = 3_600_000;
+// Mirrors history::HEARTBEAT_SECS. The backend writes at least this often
+// while polling, so a longer silence (plus a poll's slack) means no reading
+// was taken, and the line breaks there instead of bridging the gap.
+const HEARTBEAT_MS = 30 * 60 * 1000;
+const SPARK_W = 248;
+const SPARK_H = 30;
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/// Fetched only while the section is open. Closed, it costs no IPC and no
+/// drawing, which is the state the popover spends nearly all its time in.
+async function loadHistory() {
+  if (!el("history").open) return;
+  const now = Date.now();
+  let samples;
+  try {
+    // One fetch covers both charts: the weekly span contains the session one.
+    samples = await invoke("get_history", { sinceMs: now - 7 * 24 * HOUR_MS });
+  } catch {
+    return;
+  }
+  drawSpark("session", samples, 1, now - 24 * HOUR_MS, now);
+  drawSpark("weekly", samples, 2, now - 7 * 24 * HOUR_MS, now);
+}
+
+/// Draws one sparkline from `[epochMs, session, weekly]` triples.
+///
+/// A step line, not a diagonal: usage holds its value until the next reading,
+/// and a slope between two readings would invent values that never existed.
+function drawSpark(key, samples, column, from, to) {
+  // Start from the reading that held at this chart's left edge.
+  let start = 0;
+  while (start + 1 < samples.length && samples[start + 1][0] <= from) start++;
+  const points = samples.slice(start);
+
+  const pollMs = pollIntervalSecs * 1000;
+  const gapMs = HEARTBEAT_MS + 2 * pollMs;
+  const x = (t) => (((Math.min(Math.max(t, from), to) - from) / (to - from)) * SPARK_W).toFixed(1);
+  const y = (v) => (SPARK_H - 1 - (Math.min(100, Math.max(0, v)) / 100) * (SPARK_H - 2)).toFixed(1);
+
+  let line = "";
+  let area = "";
+  let run = "";
+  let runStartX = null;
+  for (let i = 0; i < points.length; i++) {
+    const t = points[i][0];
+    const value = points[i][column];
+    const next = points[i + 1];
+
+    if (runStartX == null) {
+      runStartX = x(t);
+      run = `M${runStartX} ${y(value)}`;
+    } else {
+      run += `V${y(value)}`;
+    }
+
+    // Hold until the next reading. At a gap, or the newest reading when it is
+    // not current, hold for one poll only — that much is known to be true.
+    const endsRun = !next || next[0] - t > gapMs;
+    const until = !endsRun ? next[0] : !next && to - t <= gapMs ? to : t + pollMs;
+    run += `H${x(until)}`;
+
+    if (endsRun) {
+      line += run;
+      area += `${run}V${SPARK_H}H${runStartX}Z`;
+      runStartX = null;
+    }
+  }
+
+  const color = points.length ? usageColor(points[points.length - 1][column]) : "var(--fg-muted)";
+  el(`${key}-spark`).replaceChildren(
+    svgPath("spark-area", area, { fill: color }),
+    svgPath("spark-line", line, { stroke: color })
+  );
+  el(`${key}-peak`).textContent = points.length
+    ? `peak ${Math.max(...points.map((p) => p[column]))}%`
+    : "no readings yet";
+}
+
+function svgPath(className, d, style) {
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("class", className);
+  path.setAttribute("d", d);
+  Object.assign(path.style, style);
+  return path;
+}
+
+el("history").addEventListener("toggle", loadHistory);
+// The popover is hidden rather than closed, so a section left open must catch
+// up when the window comes back.
+window.addEventListener("focus", loadHistory);
+
 // MARK: - Settings
 
 // Applied optimistically, then reconciled with what the backend actually
@@ -324,7 +418,11 @@ for (const id of ["quit", "quit-nc"]) {
   el(id).addEventListener("click", () => invoke("quit_app"));
 }
 
-listen("usage://snapshot", (event) => render(event.payload));
+listen("usage://snapshot", (event) => {
+  render(event.payload);
+  // Only while someone is looking; a hidden popover need not keep up.
+  if (document.hasFocus()) loadHistory();
+});
 invoke("get_snapshot").then(render);
 loadSettings();
 loadLoginItem();

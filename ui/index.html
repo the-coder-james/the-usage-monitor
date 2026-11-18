@@ -52,6 +52,30 @@
       <div class="metric-reset" id="weekly-reset">—</div>
     </div>
 
+    <!-- Collapsed by default: history is fetched only while this is open. -->
+    <details class="history" id="history">
+      <summary>
+        <span class="chev" aria-hidden="true">›</span>
+        <span>History</span>
+      </summary>
+
+      <div class="spark">
+        <div class="spark-head">
+          <span>Session · last 24h</span>
+          <span id="session-peak"></span>
+        </div>
+        <svg id="session-spark" class="spark-svg" viewBox="0 0 248 30" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </div>
+
+      <div class="spark">
+        <div class="spark-head">
+          <span>Weekly · last 7d</span>
+          <span id="weekly-peak"></span>
+        </div>
+        <svg id="weekly-spark" class="spark-svg" viewBox="0 0 248 30" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </div>
+    </details>
+
     <!-- Collapsible service status, matching the Swift popover's accordion. -->
     <details class="status">
       <summary>

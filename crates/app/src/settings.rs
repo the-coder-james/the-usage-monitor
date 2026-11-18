@@ -67,9 +67,10 @@ impl Settings {
     }
 }
 
-/// `~/.config/claudeusage/settings.json` on Linux, the platform equivalent
-/// elsewhere. Hand-rolled rather than adding a `dirs` dependency for one path.
-fn settings_path() -> Option<PathBuf> {
+/// `~/.config/ClaudeUsage` on Linux, the platform equivalent elsewhere — where
+/// everything the app persists lives. Hand-rolled rather than adding a `dirs`
+/// dependency for one path.
+pub fn data_dir() -> Option<PathBuf> {
     let base = if cfg!(target_os = "macos") {
         std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"))
     } else if cfg!(windows) {
@@ -79,7 +80,11 @@ fn settings_path() -> Option<PathBuf> {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
     }?;
-    Some(base.join("ClaudeUsage").join("settings.json"))
+    Some(base.join("ClaudeUsage"))
+}
+
+fn settings_path() -> Option<PathBuf> {
+    Some(data_dir()?.join("settings.json"))
 }
 
 /// In-memory cache, so the poll loop does not read the file every tick.
