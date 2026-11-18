@@ -549,7 +549,8 @@ that no longer exists.
 Table stakes for a tray app, absent from the current Swift feature set:
 
 - **`tauri-plugin-single-instance`** — a tray app must not run twice.
-- **`tauri-plugin-autostart`** — launch at login.
+- **`tauri-plugin-autostart`** — launch at login, a toggle in Settings. See
+  "Launch at login" in `architecture.md`.
 - **`tauri-plugin-notification`** for the 80/95 % alerts. Windows toasts
   **require a Start Menu shortcut + AppUserModelID**; they silently no-op in dev
   builds but work from the MSI.

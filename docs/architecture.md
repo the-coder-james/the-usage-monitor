@@ -161,6 +161,25 @@ OS config directory. Values are clamped on both load and save — a hand-edited
 The interval is read per tick, so a change applies on the next cycle without
 restarting the poller.
 
+### Launch at login
+
+`tauri-plugin-autostart` registers the app with the OS: a LaunchAgent plist in
+`~/Library/LaunchAgents` on macOS, the HKCU `Run` key on Windows, a `.desktop`
+file in `~/.config/autostart` on Linux (the AppImage path, when run as one). It
+is **not** a field in the settings JSON: the user can remove the registration
+from System Settings or a startup manager, so the toggle reads the OS every
+time the Settings section opens.
+
+- **LaunchAgent, not AppleScript**, on macOS. The AppleScript launcher drives
+  System Events and needs an Automation grant; a plist file needs nothing.
+- **Every backend stores an absolute path**, so a release build re-registers
+  itself on launch when the item is on. Moving the app heals on the next run.
+  Debug builds skip this, so `make run` cannot repoint the installed app's
+  login item at `target/debug`.
+- **A translocated copy is refused.** An unsigned app opened straight from
+  Downloads runs from a randomised `AppTranslocation/` path that is gone by the
+  next login, so the toggle is disabled with a "move to Applications" note.
+
 ---
 
 ## The tray

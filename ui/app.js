@@ -277,6 +277,44 @@ for (const id of ["interval", "tray-display", "alert80", "alert95"]) {
   el(id).addEventListener("change", saveSettings);
 }
 
+// Launch at login lives outside saveSettings on purpose: the OS registration
+// is the truth, not settings.json, so the checkbox always shows what the
+// backend reports back rather than what was clicked.
+function renderLoginItem(item, error) {
+  const box = el("login-item");
+  const note = el("login-item-note");
+  box.checked = item.enabled;
+  box.disabled = item.unavailableReason != null && !item.enabled;
+  const message = error ?? item.unavailableReason;
+  note.textContent = message ?? "";
+  note.hidden = message == null;
+}
+
+async function loadLoginItem() {
+  try {
+    renderLoginItem(await invoke("get_login_item"));
+  } catch {
+    el("login-item").disabled = true;
+  }
+}
+
+el("login-item").addEventListener("change", async (event) => {
+  const wanted = event.target.checked;
+  try {
+    renderLoginItem(await invoke("set_login_item", { enabled: wanted }));
+  } catch (error) {
+    // Re-read rather than guess: a failed enable may have left nothing, a
+    // failed disable may have left the old registration in place.
+    try {
+      renderLoginItem(await invoke("get_login_item"), String(error));
+    } catch {
+      el("login-item").checked = !wanted;
+    }
+  }
+});
+
+el("test-notification").addEventListener("click", () => invoke("send_test_notification"));
+
 el("refresh").addEventListener("click", () => invoke("refresh_now"));
 el("recheck").addEventListener("click", () => invoke("recheck_credentials"));
 
@@ -289,6 +327,10 @@ for (const id of ["quit", "quit-nc"]) {
 listen("usage://snapshot", (event) => render(event.payload));
 invoke("get_snapshot").then(render);
 loadSettings();
+loadLoginItem();
+// Re-read on every expand: the login item can be removed from System Settings
+// (or a startup manager) while the app runs, and the popover is long-lived.
+el("settings").addEventListener("toggle", () => el("settings").open && loadLoginItem());
 
 // Shrink the window to whatever is actually rendered. The panel's height
 // varies — the status accordion expands, and the no-credential state is much

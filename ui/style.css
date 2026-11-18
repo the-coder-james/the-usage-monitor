@@ -267,7 +267,15 @@ h1 { font-size: 13px; font-weight: 600; margin: 0; }
   padding: 5px 0;
 }
 
-.setting label { color: var(--fg-muted); }
+.setting label,
+.setting-label { color: var(--fg-muted); }
+
+/* Explains a disabled or failed setting, directly under its row. */
+.setting-note {
+  margin: -2px 0 4px;
+  font-size: 10px;
+  color: var(--usage-amber);
+}
 .setting-meta { color: var(--fg-tertiary); }
 .setting:first-of-type { margin-top: 6px; }
 
@@ -336,6 +344,8 @@ footer .actions .btn {
 
 .btn:hover { background: var(--btn-bg-hover); }
 .btn-small { font-size: 11px; padding: 4px 10px; }
+/* Sized to sit in a settings row without making it taller than its peers. */
+.btn-tiny { font-size: 11px; padding: 2px 8px; border-radius: 6px; }
 
 .actions {
   display: flex;

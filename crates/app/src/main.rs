@@ -5,6 +5,7 @@
 //!
 //! Replaces the SwiftUI `MenuBarExtra` host from `ClaudeUsageApp.swift`.
 
+mod autostart;
 mod settings;
 mod state;
 mod tray;
@@ -70,6 +71,35 @@ fn set_settings(
     // waiting for the next poll.
     publish(&app, state.inner());
     saved
+}
+
+/// Whether the app launches at login, read from the OS rather than settings.
+#[tauri::command]
+fn get_login_item(app: tauri::AppHandle) -> autostart::LoginItem {
+    autostart::status(&app)
+}
+
+/// Registers or removes the login item. An error carries a message the
+/// settings panel shows as-is.
+#[tauri::command]
+fn set_login_item(app: tauri::AppHandle, enabled: bool) -> Result<autostart::LoginItem, String> {
+    autostart::set(&app, enabled)
+}
+
+/// Sends a sample alert from the Settings panel.
+///
+/// A real alert only fires on an 80 % crossing, which is a bad moment to learn
+/// that notifications are blocked. On macOS the first notification is also
+/// what decides whether the app may notify at all, so this lets the user
+/// settle that up front.
+#[tauri::command]
+fn send_test_notification(app: tauri::AppHandle) {
+    let _ = app
+        .notification()
+        .builder()
+        .title("Claude usage alerts are on")
+        .body("You'll be notified when session usage crosses 80% and 95%.")
+        .show();
 }
 
 /// Quits the app. Exposed to the popover because the tray's right-click menu
@@ -157,6 +187,9 @@ fn main() {
         }))
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_notification::init())
+        // LaunchAgent rather than AppleScript: the AppleScript launcher drives
+        // System Events, which needs an Automation (TCC) grant — one more
+        // permission prompt for an unsigned build. A plist file needs none.
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -167,7 +200,10 @@ fn main() {
             recheck_credentials,
             quit_app,
             get_settings,
-            set_settings
+            set_settings,
+            get_login_item,
+            set_login_item,
+            send_test_notification
         ])
         .setup(|app| {
             let state = Arc::new(AppState::new());
@@ -227,6 +263,7 @@ fn main() {
             }
 
             let handle = app.handle().clone();
+            autostart::refresh_registration(&handle);
             publish(&handle, &state);
             spawn_usage_poller(handle.clone(), Arc::clone(&state));
             spawn_status_poller(handle, state);
@@ -373,8 +410,8 @@ fn popover_is_on_screen(window: &tauri::WebviewWindow) -> bool {
     let m_pos = monitor.position();
     let m_size = monitor.size();
 
-    let fits_horizontally = pos.x >= m_pos.x
-        && pos.x + size.width as i32 <= m_pos.x + m_size.width as i32;
+    let fits_horizontally =
+        pos.x >= m_pos.x && pos.x + size.width as i32 <= m_pos.x + m_size.width as i32;
     // Only the top edge is checked vertically: a popover taller than the
     // screen should still hang off the bottom rather than be relocated.
     let starts_below_the_top = pos.y >= m_pos.y;
