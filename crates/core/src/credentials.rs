@@ -259,7 +259,7 @@ pub mod file {
                     // Fall back to the HOMEDRIVE+HOMEPATH pair.
                     let drive = std::env::var_os("HOMEDRIVE")?;
                     let path = std::env::var_os("HOMEPATH")?;
-                    let mut joined = std::ffi::OsString::from(drive);
+                    let mut joined = drive;
                     joined.push(path);
                     Some(PathBuf::from(joined))
                 },
