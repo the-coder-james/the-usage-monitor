@@ -13,8 +13,13 @@ mod tray;
 
 use claudeusage_core::{status, Alert};
 use state::{AppSnapshot, AppState, PollOutcome};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+#[cfg(not(windows))]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+#[cfg(not(windows))]
+use std::sync::OnceLock;
+#[cfg(not(windows))]
 use std::time::Instant;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -149,10 +154,43 @@ fn run_poll(app: &tauri::AppHandle, state: &Arc<AppState>) -> bool {
 /// Pushes the current snapshot to both the tray and the WebView.
 fn publish(app: &tauri::AppHandle, state: &Arc<AppState>) {
     let snapshot = state.snapshot();
-    if let Some(tray) = app.tray_by_id("main") {
-        tray::update(&tray, &snapshot);
-    }
+    publish_tray(app, &snapshot);
     let _ = app.emit(SNAPSHOT_EVENT, &snapshot);
+}
+
+/// Redraws the tray icons for the current layout setting.
+///
+/// The second icon (the "two icons" layout) is created once at startup and
+/// only ever hidden or shown. Windows identifies a tray icon by the order it
+/// was created in, so removing and re-adding it would make it a new icon each
+/// time — and a new icon lands in the hidden-icons overflow.
+fn publish_tray(app: &tauri::AppHandle, snapshot: &AppSnapshot) {
+    let plan = tray::plan(snapshot);
+    if let (Some(main), Some(rows)) = (app.tray_by_id(tray::MAIN_ID), plan.icons.first()) {
+        tray::update(&main, rows, snapshot, plan.compact);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    if let Some(second) = app.tray_by_id(tray::SECOND_ID) {
+        let rows = plan.icons.get(1);
+        if let Some(rows) = rows {
+            tray::update(&second, rows, snapshot, plan.compact);
+        }
+        set_second_tray_visible(&second, rows.is_some());
+    }
+}
+
+/// Shows or hides the second tray icon, only when that actually changes —
+/// on Windows each call re-adds or deletes the icon with the shell.
+#[cfg(not(target_os = "linux"))]
+fn set_second_tray_visible(tray: &tauri::tray::TrayIcon, visible: bool) {
+    use std::sync::atomic::AtomicU8;
+    // 0 = not yet set, 1 = hidden, 2 = shown.
+    static LAST: AtomicU8 = AtomicU8::new(0);
+    let wanted = if visible { 2 } else { 1 };
+    if LAST.swap(wanted, Ordering::SeqCst) != wanted {
+        let _ = tray.set_visible(visible);
+    }
 }
 
 fn send_alert(app: &tauri::AppHandle, alert: Alert) {
@@ -182,6 +220,61 @@ fn spawn_status_poller(app: tauri::AppHandle, state: Arc<AppState>) {
         let _ = app.emit(SNAPSHOT_EVENT, &state.snapshot());
         std::thread::sleep(std::time::Duration::from_secs(status::POLL_INTERVAL_SECS));
     });
+}
+
+/// Background thread: flips the "alternating" tray layout between session and
+/// weekly. Idles cheaply under every other layout. Linux has no such layout:
+/// its tray shows both numbers as text.
+#[cfg(not(target_os = "linux"))]
+fn spawn_tray_alternator(app: tauri::AppHandle, state: Arc<AppState>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(tray::ALTERNATE_EVERY);
+        if settings::get().tray_display == settings::TrayDisplay::Alternate {
+            tray::advance_alternation();
+            publish_tray(&app, &state.snapshot());
+        }
+    });
+}
+
+/// Builds one tray icon with the shared menu and click behaviour.
+///
+/// Each icon gets its own menu: a macOS `NSMenu` can only be attached to one
+/// status item at a time.
+fn build_tray(app: &tauri::AppHandle, id: &str) -> tauri::Result<tauri::tray::TrayIcon> {
+    let refresh = MenuItem::with_id(app, "refresh", "Refresh", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&refresh, &quit])?;
+
+    TrayIconBuilder::with_id(id)
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "quit" => request_quit(app),
+            "refresh" => {
+                if let Some(state) = app.try_state::<Arc<AppState>>() {
+                    let (app, state) = (app.clone(), Arc::clone(&state));
+                    std::thread::spawn(move || {
+                        run_poll(&app, &state);
+                    });
+                }
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+            // Feeds the positioner the tray rect; without this
+            // TrayCenter has nothing to anchor to.
+            tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                toggle_popover(tray.app_handle());
+            }
+        })
+        .build(app)
 }
 
 // MARK: - Entry point
@@ -227,40 +320,14 @@ fn main() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let refresh = MenuItem::with_id(app, "refresh", "Refresh", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&refresh, &quit])?;
-
-            TrayIconBuilder::with_id("main")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => request_quit(app),
-                    "refresh" => {
-                        if let Some(state) = app.try_state::<Arc<AppState>>() {
-                            let (app, state) = (app.clone(), Arc::clone(&state));
-                            std::thread::spawn(move || {
-                                run_poll(&app, &state);
-                            });
-                        }
-                    }
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
-                    // Feeds the positioner the tray rect; without this
-                    // TrayCenter has nothing to anchor to.
-                    tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        toggle_popover(tray.app_handle());
-                    }
-                })
-                .build(app)?;
+            build_tray(app.handle(), tray::MAIN_ID)?;
+            // The second icon for the "two icons" layout; hidden until that
+            // layout is chosen (see publish_tray).
+            #[cfg(not(target_os = "linux"))]
+            {
+                let second = build_tray(app.handle(), tray::SECOND_ID)?;
+                let _ = second.set_visible(false);
+            }
 
             // Linux: warn once if nothing is listening for tray icons. GNOME
             // has shipped without StatusNotifierItem support since 3.26, so on
@@ -278,6 +345,8 @@ fn main() {
             autostart::refresh_registration(&handle);
             publish(&handle, &state);
             spawn_usage_poller(handle.clone(), Arc::clone(&state));
+            #[cfg(not(target_os = "linux"))]
+            spawn_tray_alternator(handle.clone(), Arc::clone(&state));
             spawn_status_poller(handle, state);
 
             Ok(())
@@ -285,8 +354,19 @@ fn main() {
         .on_window_event(|window, event| {
             // Auto-hide on focus loss, matching the menu-bar panel behaviour.
             // Hiding rather than closing keeps the app resident in the tray.
+            //
+            // Windows uses an ordinary framed window instead (see
+            // tauri.windows.conf.json), which stays open until it is closed.
+            #[cfg(not(windows))]
             if let WindowEvent::Focused(false) = event {
                 note_hidden_by_focus_loss();
+                let _ = window.hide();
+            }
+            // Windows: the close button hides to the tray. Letting the window
+            // be destroyed would leave the tray click nothing to show.
+            #[cfg(windows)]
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
                 let _ = window.hide();
             }
         })
@@ -330,26 +410,31 @@ fn quit_was_requested() -> bool {
 /// window that the focus-loss just closed, so the popover appears never to
 /// close. Windows is where this is most pronounced, but the ordering is not
 /// guaranteed anywhere, so the guard is unconditional.
+#[cfg(not(windows))]
 static LAST_FOCUS_HIDE_MS: AtomicU64 = AtomicU64::new(0);
 
 /// How long after a focus-loss hide a tray click is treated as part of the
 /// same gesture. Long enough to cover the event gap, short enough that a
 /// deliberate second click still opens the popover.
+#[cfg(not(windows))]
 const CLICK_DEBOUNCE_MS: u64 = 250;
 
 /// Process-relative clock. `Instant` cannot be stored in an atomic, and a
 /// monotonic counter avoids wall-clock jumps entirely.
+#[cfg(not(windows))]
 fn uptime_millis() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
+#[cfg(not(windows))]
 fn note_hidden_by_focus_loss() {
     LAST_FOCUS_HIDE_MS.store(uptime_millis(), Ordering::SeqCst);
 }
 
 /// True when a tray click arrived so soon after a focus-loss hide that it is
 /// the same user gesture.
+#[cfg(not(windows))]
 fn click_closed_the_popover() -> bool {
     let last = LAST_FOCUS_HIDE_MS.load(Ordering::SeqCst);
     last != 0 && uptime_millis().saturating_sub(last) < CLICK_DEBOUNCE_MS
@@ -361,11 +446,28 @@ fn toggle_popover(app: &tauri::AppHandle) {
         return;
     };
 
+    // Windows: a normal window. A click brings it back from minimised or
+    // hidden, and hides it when it is already showing. It keeps wherever the
+    // user moved it; the first show is centred by the config.
+    #[cfg(windows)]
+    {
+        let minimized = window.is_minimized().unwrap_or(false);
+        if window.is_visible().unwrap_or(false) && !minimized {
+            let _ = window.hide();
+        } else {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+
     // The focus-loss handler already hid it; this click ends the gesture.
+    #[cfg(not(windows))]
     if click_closed_the_popover() {
         return;
     }
 
+    #[cfg(not(windows))]
     if window.is_visible().unwrap_or(false) {
         let _ = window.hide();
     } else {
@@ -386,6 +488,7 @@ fn toggle_popover(app: &tauri::AppHandle) {
 /// So the result is validated rather than trusted: if the window would land
 /// off-screen or straddle a monitor edge, it is placed near the top-right of
 /// the active monitor instead — where a menu-bar item would be.
+#[cfg(not(windows))]
 fn position_popover(window: &tauri::WebviewWindow) {
     #[cfg(target_os = "linux")]
     {
@@ -394,7 +497,7 @@ fn position_popover(window: &tauri::WebviewWindow) {
         let _ = window;
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
         use tauri_plugin_positioner::{Position, WindowExt};
 
@@ -411,7 +514,7 @@ fn position_popover(window: &tauri::WebviewWindow) {
 ///
 /// Guards against the multi-monitor case, where the positioner can return
 /// coordinates belonging to a different screen than the one the tray is on.
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn popover_is_on_screen(window: &tauri::WebviewWindow) -> bool {
     let (Ok(pos), Ok(size), Ok(Some(monitor))) =
         (window.outer_position(), window.outer_size(), window.current_monitor())

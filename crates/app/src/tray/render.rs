@@ -10,6 +10,10 @@
 //! renders at 3x for Retina sharpness; Windows downscales poorly and must be
 //! given exactly the size the shell reports. See docs/cross-platform.md.
 
+// Windows draws the tray with `render_square` alone, so the wide renderer and
+// its row-icon machinery are only reached from macOS, Linux and the tests.
+#![cfg_attr(windows, allow(dead_code))]
+
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use claudeusage_core::UsageLevel;
 
@@ -185,6 +189,7 @@ fn blit_icon(
 }
 
 /// A single row of the tray icon.
+#[derive(Clone)]
 pub struct Row {
     pub text: String,
     pub rgb: [u8; 3],
@@ -322,6 +327,122 @@ pub fn render_at(rows: &[Row], total_h: u32) -> Rendered {
     }
 
     Rendered { rgba, width, height: total_h }
+}
+
+/// The rule between the two rows of the Windows icon: neutral grey, mostly
+/// opaque, so it shows on both light and dark taskbars.
+#[cfg(any(windows, test))]
+const DIVIDER_RGBA: [u8; 4] = [0x8E, 0x8E, 0x93, 0xC8];
+
+/// Windows: renders into an exact `size` x `size` square.
+///
+/// The Windows tray slot is square, so the wide two-row image `render_at`
+/// produces gets shrunk to fit and becomes unreadable. Here every pixel goes
+/// to the digits: the `%` sign and row icons are dropped (the tooltip carries
+/// the labels), and glyphs are fitted by their *ink* bounds rather than font
+/// metrics, so digits fill the row instead of leaving room for descenders
+/// they do not have. Rows share one scale so "2" and "41" read as a pair, and
+/// a thin grey rule separates them unless `compact` asks for every pixel.
+#[cfg(any(windows, test))]
+pub fn render_square(rows: &[Row], size: u32, compact: bool) -> Rendered {
+    let font = FontRef::try_from_slice(FONT).expect("bundled font must parse");
+    let size_f = size as f32;
+    let mut rgba = vec![0u8; (size * size * 4) as usize];
+
+    let texts: Vec<String> = rows.iter().map(|r| r.text.replace('%', "")).collect();
+    let rows_count = texts.len().max(1) as f32;
+    // The gap between rows holds a thin divider, so it is wide enough for the
+    // rule plus a pixel of clearance on each side where the size allows.
+    // Compact drops the rule and keeps a single pixel apart.
+    let gap = match (rows_count > 1.0, compact) {
+        (false, _) => 0.0,
+        (true, true) => 1.0,
+        (true, false) => (size_f * 0.125).round().max(2.0),
+    };
+    let row_h = (size_f - gap * (rows_count - 1.0)) / rows_count;
+    // How much of its row box the digits fill; compact uses all of it.
+    let fill = if compact { 1.0 } else { 0.96 };
+
+    // Divider between rows: neutral grey, readable on light and dark taskbars,
+    // inset from the edges so it reads as a rule rather than a border.
+    for i in (1..texts.len()).filter(|_| !compact) {
+        let y = (i as f32 * row_h + (i - 1) as f32 * gap + (gap - 1.0) / 2.0).round() as u32;
+        let inset = (size_f * 0.125).round() as u32;
+        if y < size {
+            for x in inset..size.saturating_sub(inset) {
+                let idx = ((y * size + x) * 4) as usize;
+                rgba[idx..idx + 4].copy_from_slice(&DIVIDER_RGBA);
+            }
+        }
+    }
+
+    // Ink bounds of each string at a reference scale, relative to pen (0, 0).
+    const REF: f32 = 100.0;
+    let ink = |text: &str| -> Option<(f32, f32, f32, f32)> {
+        let scaled = font.as_scaled(PxScale::from(REF));
+        let mut pen = 0.0;
+        let mut bounds: Option<(f32, f32, f32, f32)> = None;
+        for ch in text.chars() {
+            let id = font.glyph_id(ch);
+            let glyph = id.with_scale_and_position(REF, ab_glyph::point(pen, 0.0));
+            if let Some(outlined) = font.outline_glyph(glyph) {
+                let b = outlined.px_bounds();
+                bounds = Some(match bounds {
+                    None => (b.min.x, b.min.y, b.max.x, b.max.y),
+                    Some((x0, y0, x1, y1)) => {
+                        (x0.min(b.min.x), y0.min(b.min.y), x1.max(b.max.x), y1.max(b.max.y))
+                    }
+                });
+            }
+            pen += scaled.h_advance(id);
+        }
+        bounds
+    };
+    let inks: Vec<_> = texts.iter().map(|t| ink(t)).collect();
+
+    // One factor for every row: the largest that fits each row's box.
+    let factor = inks
+        .iter()
+        .flatten()
+        .map(|&(x0, y0, x1, y1)| ((size_f * 0.98) / (x1 - x0)).min((row_h * fill) / (y1 - y0)))
+        .fold(f32::INFINITY, f32::min);
+    if !factor.is_finite() {
+        return Rendered { rgba, width: size, height: size };
+    }
+    let scale = PxScale::from(REF * factor);
+    let scaled = font.as_scaled(scale);
+
+    for (i, ((text, ink), row)) in texts.iter().zip(&inks).zip(rows).enumerate() {
+        let Some((x0, y0, x1, y1)) = *ink else { continue };
+        let row_top = i as f32 * (row_h + gap);
+        // Centre the ink box in the row, then shift back by its offset from the pen.
+        let mut pen_x = (size_f - (x1 - x0) * factor) / 2.0 - x0 * factor;
+        let baseline = row_top + (row_h - (y1 - y0) * factor) / 2.0 - y0 * factor;
+
+        for ch in text.chars() {
+            let id = font.glyph_id(ch);
+            let glyph = id.with_scale_and_position(scale, ab_glyph::point(pen_x, baseline));
+            if let Some(outlined) = font.outline_glyph(glyph) {
+                let b = outlined.px_bounds();
+                outlined.draw(|gx, gy, coverage| {
+                    let x = b.min.x as i32 + gx as i32;
+                    let y = b.min.y as i32 + gy as i32;
+                    if x < 0 || y < 0 || x >= size as i32 || y >= size as i32 {
+                        return;
+                    }
+                    let idx = ((y as u32 * size + x as u32) * 4) as usize;
+                    let alpha = (coverage.min(1.0) * 255.0) as u8;
+                    if alpha > rgba[idx + 3] {
+                        rgba[idx..idx + 3].copy_from_slice(&row.rgb);
+                        rgba[idx + 3] = alpha;
+                    }
+                });
+            }
+            pen_x += scaled.h_advance(id);
+        }
+    }
+
+    Rendered { rgba, width: size, height: size }
 }
 
 #[cfg(test)]
@@ -471,5 +592,76 @@ mod tests {
     fn disconnected_rows_render() {
         let r = render_at_default(&[Row::disconnected(), Row::disconnected()]);
         assert!(r.rgba.chunks(4).any(|px| px[3] > 0));
+    }
+
+    /// Rows (top, bottom) that contain any drawn pixel.
+    fn ink_rows(r: &Rendered) -> (u32, u32) {
+        let drawn = |y: u32| (0..r.width).any(|x| r.rgba[((y * r.width + x) * 4 + 3) as usize] > 0);
+        let top = (0..r.height).find(|&y| drawn(y)).expect("something drawn");
+        let bottom = (0..r.height).rev().find(|&y| drawn(y)).expect("something drawn");
+        (top, bottom)
+    }
+
+    #[test]
+    fn the_windows_icon_is_exactly_square_at_every_tray_size() {
+        for size in [16u32, 20, 24, 32] {
+            for rows in [
+                vec![Row::usage(43.0)],
+                vec![Row::usage(2.0), Row::usage(100.0)],
+                vec![Row::disconnected(), Row::disconnected()],
+            ] {
+                let r = render_square(&rows, size, false);
+                assert_eq!((r.width, r.height), (size, size));
+                assert_eq!(r.rgba.len(), (size * size * 4) as usize);
+                assert!(r.rgba.chunks(4).any(|px| px[3] > 0), "nothing drawn at {size}px");
+            }
+        }
+    }
+
+    #[test]
+    fn the_windows_icon_fills_the_slot() {
+        // The regression this guards: a wide image squeezed into the square
+        // slot left the digits a fraction of the icon's height.
+        let one = render_square(&[Row::usage(43.0)], 24, false);
+        let (top, bottom) = ink_rows(&one);
+        assert!(bottom - top + 1 >= 14, "single row only {}px tall", bottom - top + 1);
+
+        let two = render_square(&[Row::usage(43.0), Row::usage(71.0)], 24, false);
+        let (top, bottom) = ink_rows(&two);
+        assert!(bottom - top + 1 >= 20, "two rows only span {}px", bottom - top + 1);
+    }
+
+    #[test]
+    fn the_windows_icon_draws_a_rule_between_rows() {
+        let has_rule = |r: &Rendered| {
+            (0..r.height).any(|y| {
+                (0..r.width).any(|x| {
+                    let i = ((y * r.width + x) * 4) as usize;
+                    r.rgba[i..i + 4] == DIVIDER_RGBA
+                })
+            })
+        };
+        for size in [16u32, 24, 32] {
+            assert!(has_rule(&render_square(&[Row::usage(2.0), Row::usage(41.0)], size, false)));
+        }
+        assert!(!has_rule(&render_square(&[Row::usage(41.0)], 24, false)), "one row needs no rule");
+    }
+
+    #[test]
+    fn compact_drops_the_rule_for_bigger_digits() {
+        let rows = [Row::usage(43.0), Row::usage(71.0)];
+        let normal = render_square(&rows, 24, false);
+        let compact = render_square(&rows, 24, true);
+        assert!(!compact.rgba.chunks(4).any(|px| px == DIVIDER_RGBA), "compact has no rule");
+        // Rows are taller once the divider's gap is reclaimed; the shared
+        // scale makes the widest row's ink the measure.
+        let width = |r: &Rendered| {
+            let drawn =
+                |x: u32| (0..r.height).any(|y| r.rgba[((y * r.width + x) * 4 + 3) as usize] > 0);
+            let left = (0..r.width).find(|&x| drawn(x)).unwrap();
+            let right = (0..r.width).rev().find(|&x| drawn(x)).unwrap();
+            right - left + 1
+        };
+        assert!(width(&compact) >= width(&normal), "compact digits are not smaller");
     }
 }

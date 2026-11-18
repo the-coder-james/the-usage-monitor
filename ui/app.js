@@ -8,6 +8,24 @@
 // than an npm import. That global only exists when `withGlobalTauri` is set in
 // tauri.conf.json — without it this file throws on its first line and the
 // popover renders as an empty window, which is exactly what it looked like.
+// Windows-only styling hook (see `.platform-windows` in style.css). Set first
+// so it applies even if the Tauri global below is missing.
+if (navigator.userAgent.includes("Windows")) {
+  document.documentElement.classList.add("platform-windows");
+}
+
+// Tray layouts differ per platform (see `supported` in tray/mod.rs): drop the
+// options this one cannot show, and name the tray the way the OS does.
+{
+  const ua = navigator.userAgent;
+  const platform = ua.includes("Windows") ? "windows" : ua.includes("Mac") ? "macos" : "linux";
+  for (const option of document.querySelectorAll("#tray-display option[data-platforms]")) {
+    if (!option.dataset.platforms.split(" ").includes(platform)) option.remove();
+  }
+  const label = document.getElementById("tray-display-label");
+  if (label && platform === "windows") label.textContent = "Taskbar shows";
+}
+
 const tauri = window.__TAURI__;
 if (!tauri) {
   document.body.innerHTML =
