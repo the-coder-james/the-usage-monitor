@@ -155,10 +155,8 @@ pub fn poll_once(state: &AppState) -> PollOutcome {
     // is spent — and it carries the usage headers like any other. Letting ureq
     // raise it as an error discards exactly the reading needed to display
     // "100%", which is why the app used to go blank at the limit.
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .build()
-        .into();
+    let agent: ureq::Agent =
+        ureq::Agent::config_builder().http_status_as_error(false).build().into();
 
     let mut request =
         agent.post(usage::ENDPOINT).header("Authorization", &format!("Bearer {token}"));
@@ -199,11 +197,7 @@ pub fn poll_once(state: &AppState) -> PollOutcome {
 }
 
 /// Applies a successful poll to the shared state, returning any alert to fire.
-pub fn apply_usage(
-    state: &AppState,
-    snapshot: UsageSnapshot,
-    rate_limited: bool,
-) -> Option<Alert> {
+pub fn apply_usage(state: &AppState, snapshot: UsageSnapshot, rate_limited: bool) -> Option<Alert> {
     let previous = {
         let mut last = state.last_session_percent.lock().expect("alert lock");
         let previous = *last;

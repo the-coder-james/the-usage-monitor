@@ -188,8 +188,7 @@ mod tests {
     fn a_rate_limited_snapshot_shows_its_numbers() {
         // 429 is a successful reading, not a failure: the quota is spent and
         // the percentage saying so is the whole point.
-        let limited =
-            AppSnapshot { rate_limited: true, session_percent: 100.0, ..healthy() };
+        let limited = AppSnapshot { rate_limited: true, session_percent: 100.0, ..healthy() };
         assert_eq!(rows_for(&limited)[0].text, "100%");
     }
 
@@ -198,8 +197,7 @@ mod tests {
     fn the_tooltip_names_the_limit_case() {
         // "no connection" and "quota spent" look identical from the numbers,
         // so the tooltip has to distinguish them.
-        let limited =
-            AppSnapshot { rate_limited: true, session_percent: 100.0, ..healthy() };
+        let limited = AppSnapshot { rate_limited: true, session_percent: 100.0, ..healthy() };
         assert!(tooltip_for(&limited).contains("limit reached"));
 
         let stale = AppSnapshot { is_stale: true, ..healthy() };

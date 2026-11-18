@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 /// What the tray icon shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrayDisplay {
     /// The 5-hour session window only.
@@ -18,13 +18,8 @@ pub enum TrayDisplay {
     /// The 7-day weekly window only.
     Weekly,
     /// Both, stacked.
+    #[default]
     Both,
-}
-
-impl Default for TrayDisplay {
-    fn default() -> Self {
-        Self::Both
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,11 +58,7 @@ impl Settings {
     fn sanitised(mut self) -> Self {
         // A 0-second interval would spin the poller; anything under 30 would
         // burn API requests for no benefit, since the headers are coarse.
-        if self.refresh_interval < 30 {
-            self.refresh_interval = 30;
-        } else if self.refresh_interval > 3600 {
-            self.refresh_interval = 3600;
-        }
+        self.refresh_interval = self.refresh_interval.clamp(30, 3600);
         self
     }
 

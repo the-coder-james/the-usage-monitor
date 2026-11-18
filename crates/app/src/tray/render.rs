@@ -141,14 +141,10 @@ fn blit_icon(
         for ox in 0..draw_w {
             // Average the source block this destination pixel covers, offset
             // into the content box.
-            let (x0, x1) = (
-                cx0 + (ox as f32 * step_x) as u32,
-                cx0 + (((ox + 1) as f32) * step_x) as u32,
-            );
-            let (y0, y1) = (
-                cy0 + (oy as f32 * step_y) as u32,
-                cy0 + (((oy + 1) as f32) * step_y) as u32,
-            );
+            let (x0, x1) =
+                (cx0 + (ox as f32 * step_x) as u32, cx0 + (((ox + 1) as f32) * step_x) as u32);
+            let (y0, y1) =
+                (cy0 + (oy as f32 * step_y) as u32, cy0 + (((oy + 1) as f32) * step_y) as u32);
             let (mut r, mut g, mut b, mut a, mut n) = (0u32, 0u32, 0u32, 0u32, 0u32);
 
             for sy in y0..y1.max(y0 + 1).min(cy1 + 1) {
@@ -386,10 +382,7 @@ mod tests {
         // whole mechanism is pointless.
         let weekly = decode(RowIcon::Weekly.bytes()).expect("decodes");
         let (x0, _, x1, _) = weekly.content;
-        assert!(
-            (x1 - x0 + 1) < weekly.width,
-            "expected the calendar to have transparent margin"
-        );
+        assert!((x1 - x0 + 1) < weekly.width, "expected the calendar to have transparent margin");
     }
 
     #[test]
