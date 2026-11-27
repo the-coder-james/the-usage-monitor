@@ -1,0 +1,440 @@
+/* Popover styling.
+   The Swift app used .glassEffect() (Liquid Glass); backdrop-filter is the
+   direct web equivalent and needs no OS-version fallback. */
+
+:root {
+  --usage-green: #1d9e75;
+  --usage-amber: #ba7517;
+  --usage-red:   #e24b4a;
+
+  --bg:          rgba(246, 246, 248, 0.72);
+  --fg:          #1c1c1e;
+  --fg-muted:    #6c6c70;
+  --fg-tertiary: #8e8e93;
+  --track:       rgba(120, 120, 128, 0.18);
+  --bar-track:   rgba(0, 0, 0, 0.10);
+  --border:      rgba(120, 120, 128, 0.22);
+  --btn-bg:      rgba(120, 120, 128, 0.14);
+  --btn-bg-hover: rgba(120, 120, 128, 0.24);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:       rgba(30, 30, 32, 0.72);
+    --fg:       #f2f2f7;
+    --fg-muted: #98989f;
+    --fg-tertiary: #6c6c70;
+    --track:    rgba(120, 120, 128, 0.28);
+    --bar-track: rgba(255, 255, 255, 0.12);
+    --border:   rgba(120, 120, 128, 0.32);
+    --btn-bg:      rgba(120, 120, 128, 0.24);
+    --btn-bg-hover: rgba(120, 120, 128, 0.36);
+  }
+}
+
+/* Windows: the panel is an ordinary framed window (tauri.windows.conf.json),
+   not a transparent popover — WebView2 cannot blur what is behind a window,
+   so the translucent glass just showed the desktop through it. Use an opaque
+   surface close to the Windows 11 colours, filling the window edge to edge.
+   macOS keeps the translucent rounded glass. */
+:root.platform-windows {
+  --bg: rgb(243, 243, 243);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root.platform-windows {
+    --bg: rgb(36, 36, 38);
+  }
+}
+
+.platform-windows,
+.platform-windows body {
+  background: var(--bg);
+}
+
+.platform-windows body::before {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: none;
+  border-radius: 0;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  /* Height comes from the content — app.js sizes the window to match. A
+     forced 100% made the body fill a window that had not resized yet, so the
+     rounded corners were cropped by the square window edge. */
+  height: auto;
+  /* Transparent so the window's own rounded glass surface shows through. */
+  background: transparent;
+  font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  color: var(--fg);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* The rounded surface is the body, but it must not sit flush against the
+   window edge: at a fractional backing-scale the corner arc lands mid-pixel
+   and macOS paints the leftover as a hard square notch. A 1px transparent
+   gutter gives the arc somewhere to fall, which is why the padding below is
+   1px larger than the visual spacing.
+
+   The blur is on ::before rather than the body itself: backdrop-filter
+   establishes a layer that WebKit clips to the *border box* ignoring
+   border-radius, so applying it directly repaints square corners over the
+   rounded background. */
+body {
+  padding: 1px;
+  background: transparent;
+  position: relative;
+}
+
+body::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: 12px;
+  background: var(--bg);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border: 0.5px solid var(--border);
+  /* Behind the content, above the transparent window. */
+  z-index: -1;
+}
+
+/* The real padding now lives on the panels, since the body's is the gutter. */
+#panel, #no-credential { padding: 14px 16px 12px; }
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+/* The version sits with the title, so `space-between` keeps pushing the plan
+   badge to the right edge rather than centring it as a third flex item. */
+header h1 { margin-right: 5px; }
+header .version { margin-right: auto; }
+
+.version {
+  font-size: 10px;
+  color: var(--fg-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+h1 { font-size: 13px; font-weight: 600; margin: 0; }
+
+.plan {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--fg-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Notice banner */
+
+/* `hidden` is only a UA-stylesheet `display: none`, so any author `display`
+   rule beats it — without this the hidden notice still reserves its padding
+   and margin as an empty box above Session. */
+[hidden] { display: none !important; }
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 11px;
+  line-height: 1.4;
+  border-radius: 7px;
+  padding: 7px 9px;
+  margin-bottom: 12px;
+}
+
+.notice-icon { flex: none; }
+
+/* Quota spent — the numbers are correct, the API is just refusing work. */
+.notice.limit {
+  background: color-mix(in srgb, var(--usage-red) 14%, transparent);
+  color: var(--usage-red);
+}
+
+/* No reading at all — the numbers on screen are the last known ones. */
+.notice.offline {
+  background: var(--btn-bg);
+  color: var(--fg-muted);
+}
+
+/* Metrics */
+
+.metric { margin-bottom: 12px; }
+
+.metric-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 5px;
+}
+
+.metric-label { font-size: 12px; font-weight: 500; color: var(--fg-muted); }
+
+.metric-value {
+  font-size: 13px;
+  font-weight: 600;
+  /* Coloured by threshold, as in the Swift original — the number carries the
+     signal, not just the bar. */
+  font-variant-numeric: tabular-nums;
+}
+
+.bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bar-track);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  /* Fills on open, matching the Swift UsageBar's appear animation. */
+  transition: width 420ms cubic-bezier(0.22, 1, 0.36, 1), background-color 200ms;
+}
+
+.metric-reset {
+  margin-top: 5px;
+  font-size: 10px;
+  color: var(--fg-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Service status accordion */
+
+.status {
+  border-top: 0.5px solid var(--border);
+  padding-top: 10px;
+  margin-bottom: 10px;
+}
+
+.status summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: default;
+  font-size: 11px;
+  list-style: none;
+}
+
+.status summary::-webkit-details-marker { display: none; }
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  flex: none;
+}
+
+.status-dot.operational   { background: var(--usage-green); }
+.status-dot.degraded,
+.status-dot.maintenance   { background: var(--usage-amber); }
+.status-dot.partialOutage,
+.status-dot.majorOutage    { background: var(--usage-red); }
+
+.status ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.status li {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--fg-muted);
+  padding: 3px 0;
+}
+
+/* Settings, and the History section that shares its disclosure style */
+
+.settings,
+.history {
+  border-top: 0.5px solid var(--border);
+  padding-top: 10px;
+  margin-bottom: 10px;
+}
+
+.settings summary,
+.history summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: default;
+  font-size: 11px;
+  color: var(--fg-muted);
+  list-style: none;
+}
+
+.settings summary::-webkit-details-marker,
+.history summary::-webkit-details-marker { display: none; }
+
+.chev {
+  font-size: 12px;
+  line-height: 1;
+  transition: transform 140ms;
+}
+
+.settings[open] .chev,
+.history[open] .chev { transform: rotate(90deg); }
+
+/* History sparklines */
+
+.spark { margin-top: 8px; }
+
+.spark-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--fg-tertiary);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 3px;
+}
+
+.spark-svg {
+  display: block;
+  width: 100%;
+  height: 30px;
+  border-radius: 4px;
+  background: var(--bar-track);
+}
+
+/* The viewBox is stretched to the panel width; without this the stroke would
+   stretch with it and thicken unevenly. */
+.spark-svg path { vector-effect: non-scaling-stroke; }
+.spark-svg .spark-line { fill: none; stroke-width: 1.5; stroke-linejoin: round; }
+.spark-svg .spark-area { stroke: none; fill-opacity: 0.18; }
+
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  padding: 5px 0;
+}
+
+.setting label,
+.setting-label { color: var(--fg-muted); }
+
+/* Explains a disabled or failed setting, directly under its row. */
+.setting-note {
+  margin: -2px 0 4px;
+  font-size: 10px;
+  color: var(--usage-amber);
+}
+.setting-meta { color: var(--fg-tertiary); }
+.setting:first-of-type { margin-top: 6px; }
+
+.input {
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--btn-bg);
+  border: none;
+  border-radius: 6px;
+  padding: 3px 6px;
+  max-width: 130px;
+}
+
+/* Native checkbox, tinted to the app's accent. */
+.setting input[type="checkbox"] {
+  accent-color: var(--usage-green);
+  margin: 0;
+}
+
+/* Footer */
+
+/* Stacked, not side by side: the status line grows to "updated 12s ago ·
+   next in 55s", which wrapped and crowded the buttons on one row. */
+footer {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  border-top: 0.5px solid var(--border);
+  padding-top: 10px;
+}
+
+footer .muted {
+  text-align: center;
+  /* One line always — the countdown ticks every second, and a wrap would
+     make the panel jump height each time it crossed the boundary. */
+  white-space: nowrap;
+}
+
+footer .actions {
+  justify-content: stretch;
+}
+
+footer .actions .btn {
+  flex: 1;
+}
+
+/* No trailing margin — the window is sized to the content, so any bottom
+   margin here would render as dead space below the buttons. */
+#panel > :last-child { margin-bottom: 0; }
+
+.muted { font-size: 11px; color: var(--fg-muted); }
+
+.btn {
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--btn-bg);
+  border: none;
+  border-radius: 7px;
+  padding: 5px 12px;
+  cursor: default;
+  transition: background-color 140ms;
+}
+
+.btn:hover { background: var(--btn-bg-hover); }
+.btn-small { font-size: 11px; padding: 4px 10px; }
+/* Sized to sit in a settings row without making it taller than its peers. */
+.btn-tiny { font-size: 11px; padding: 2px 8px; border-radius: 6px; }
+
+.actions {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+}
+
+/* Quit is destructive, so it reads as such without shouting. */
+.btn-quit { color: var(--usage-red); }
+
+/* Empty state */
+
+.empty {
+  text-align: center;
+  padding: 20px 16px;
+}
+
+.empty-icon { font-size: 26px; margin-bottom: 10px; }
+.empty h1 { margin-bottom: 6px; }
+
+.empty p {
+  font-size: 11px;
+  color: var(--fg-muted);
+  line-height: 1.45;
+  margin: 0 0 14px;
+}
+
+.empty code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  background: var(--track);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
