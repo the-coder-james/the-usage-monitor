@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged by Tauri into the bundle's Info.plist (and embedded in dev builds).
+
+  LSUIElement makes LaunchServices register the app as a menu-bar agent before
+  any of our code runs. The runtime ActivationPolicy::Accessory call alone was
+  lost when the login LaunchAgent started the app: it registered as a regular
+  Foreground app, with a Dock icon, for the whole session.
+-->
+<plist version="1.0">
+<dict>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>

@@ -254,11 +254,15 @@ allows `core:default`, event listen/unlisten, and window resize, scoped to the
 the popover renders its default state forever — which is exactly how it failed
 once.
 
-Positioning uses `tauri-plugin-positioner`'s `TrayBottomCenter`, **validated
-rather than trusted**: if the result would land off-screen or straddle a
-monitor edge, it falls back to the top-right of the active monitor.
-`TrayCenter` needs a tray event before it knows where the icon is, and is
-known-broken on macOS multi-monitor.
+On macOS, positioning is done in **logical points** by `tray/placement.rs`.
+tray-icon and tao report each rect as logical points × the scale of *its own*
+screen, so a mixed-DPI desktop has no single physical space. The positioner
+plugin assumed there was one, and with a 2× built-in display beside a 1×
+external it put the popover thousands of pixels off-screen. The screen whose
+rect contains the tray point gives the scale to divide by.
+
+On Windows the popover is an ordinary framed window (`tauri.windows.conf.json`)
+that keeps wherever the user puts it, so it is not positioned at all.
 
 ---
 
@@ -271,7 +275,10 @@ Collected because each one cost real time:
 - **A tray click after focus-loss arrives second.** Without a 250 ms debounce
   the click reopens the window the focus-loss just closed.
 - **macOS needs `ActivationPolicy::Accessory`**, or a Dock icon appears and the
-  app steals focus.
+  app steals focus. The runtime call is not enough on its own: started by the
+  login LaunchAgent, the app still registered as a regular Foreground app.
+  `crates/app/Info.plist` sets `LSUIElement`, which Tauri merges into the
+  bundle, so the app is an agent before any code runs.
 - **`withGlobalTauri` defaults to false.** A buildless UI reaching Tauri
   through `window.__TAURI__` gets `undefined` without it.
 - **Wayland cannot position windows client-side.** The Linux popover is a

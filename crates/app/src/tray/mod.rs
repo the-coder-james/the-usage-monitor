@@ -13,6 +13,9 @@
 
 #[cfg(target_os = "linux")]
 pub mod linux;
+// Pure arithmetic, so its tests run on every platform.
+#[cfg(any(target_os = "macos", test))]
+pub mod placement;
 pub mod render;
 pub mod sizing;
 
