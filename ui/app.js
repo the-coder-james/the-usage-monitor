@@ -249,9 +249,26 @@ function renderStatus(snapshot) {
     services.length ? "operational" : "unknown"
   );
 
+  // Name every service that is not green, so the collapsed row says what is
+  // wrong without being opened. Worst first; a service at a lesser level than
+  // the headline carries its own label, or the headline would overstate it.
+  const affected = services
+    .filter((s) => s.health !== "operational")
+    .sort((a, b) => (severity[b.health] ?? 1) - (severity[a.health] ?? 1))
+    .map((s) =>
+      s.health === worst
+        ? s.name
+        : `${s.name}: ${(labels[s.health] ?? s.health).toLowerCase()}`
+    );
+
   el("status-dot").className = `status-dot ${worst}`;
+  const headline = labels[worst] ?? "Service status";
   el("status-summary").textContent =
-    worst === "operational" ? "All systems operational" : labels[worst] ?? "Service status";
+    worst === "operational"
+      ? "All systems operational"
+      : affected.length
+        ? `${headline} (${affected.join(", ")})`
+        : headline;
 }
 
 // MARK: - History
