@@ -55,7 +55,16 @@ This is documented honestly rather than hidden. Proceed at your own discretion.
 - **Tray display:** both percentages are rendered into the icon bitmap, because
   a menu-bar item clips multiline text and Windows has no tray text at all.
   Colour follows the usage threshold — green below 70 %, amber below 90 %, red
-  above. Linux puts the numbers in the tray title instead.
+  above. Settings offers other layouts: two icons (one per metric), one icon
+  alternating between them, or a single metric. Linux puts the numbers in the
+  tray title instead.
+- **Popover:** opens under the icon you clicked, on whichever screen that is,
+  including mixed Retina and non-Retina setups. It shows both bars, an
+  optional 24 h / 7 d usage history, and Claude service status. When a service
+  is not operational, the collapsed status row names it, e.g.
+  `Degraded (claude.ai)`.
+- **Menu bar only on macOS:** no Dock icon, including when started at login
+  (`LSUIElement` in `crates/app/Info.plist`).
 - **Unsandboxed** on macOS so it can read Claude Code's login-keychain item.
 
 ---
@@ -71,7 +80,9 @@ ClaudeUsage/
 │   ├── core/                 platform-agnostic logic, no UI, no OS calls
 │   │   └── src/              credentials, usage, status, model, alerts
 │   └── app/                  the Tauri host
-│       └── src/              main, state, tray/{render,sizing,linux}
+│       ├── src/              main, state, settings, history, autostart,
+│       │                     tray/{render,sizing,placement,linux}
+│       └── Info.plist        merged into the macOS bundle (no Dock icon)
 │
 ├── ui/                       popover: index.html, style.css, app.js
 ├── packaging/                Linux container build (.deb/.rpm/.AppImage)
@@ -99,11 +110,25 @@ Requires rustc 1.88+ (Tauri's floor). `rust-toolchain.toml` pins it; if
 Homebrew's older rust shadows rustup on your `PATH`, the Makefile resolves
 around that for you.
 
-**First launch after installing the DMG** — the build is unsigned:
+**First launch after installing the DMG** — the build is unsigned, so clear the
+quarantine flag. Recent macOS `xattr` has no `-r`, hence `find`:
 
 ```bash
-xattr -rd com.apple.quarantine /Applications/ClaudeUsage.app
+find /Applications/ClaudeUsage.app -exec xattr -d com.apple.quarantine {} \; 2>/dev/null
 ```
+
+**Updating an installed build with Launch at login on** — launchd pins the
+login item to the exact binary, and an unsigned build changes identity with
+every rebuild, so the new copy is refused (`OS_REASON_CODESIGNING`) until the
+item is reloaded. Quit the app, replace it in `/Applications`, then:
+
+```bash
+launchctl bootout   gui/$(id -u)/ClaudeUsage
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ClaudeUsage.plist   # also starts it
+```
+
+Settings and usage history live in `~/Library/Application Support/ClaudeUsage`
+and survive reinstalls.
 
 ### Other platforms
 
@@ -119,75 +144,64 @@ extension, and the app says so on startup if it is missing. **AppImage is the
 recommended artifact for Bazzite**, since layering a package on an immutable OS
 means a reboot.
 
-> Windows and Linux are written and machine-checked but **have not been run on
-> real hardware yet**. See [docs/cross-platform.md](docs/cross-platform.md).
+> Windows has been run on real hardware; on Windows the popover is an ordinary
+> window that remembers where you put it. Linux is written and machine-checked
+> but **has not been run on real hardware yet**. See
+> [docs/cross-platform.md](docs/cross-platform.md).
 
 ---
 
-## Keychain access — stopping the password prompt
+## Keychain access on macOS
 
-On first launch (and occasionally after) macOS shows:
+Claude Code stores its OAuth token as the login-keychain item
+`Claude Code-credentials`. ClaudeUsage tries three sources in order:
+`~/.claude/.credentials.json` (usually absent), then
+`/usr/bin/security find-generic-password`, then the native Security framework.
+Settings shows which one won ("Credential: security CLI").
 
-> **"ClaudeUsage" wants to use your confidential information stored in
-> "Claude Code-credentials" in your keychain.**
+The `security` CLI comes before the native API on purpose. The item's ACL
+admits `/usr/bin/security` without asking, while a direct read by an unsigned
+app shows the **"ClaudeUsage wants to use your confidential information"**
+dialog, and "Always Allow" does not stick across rebuilds or token refreshes.
+Measured: ~32 ms with no prompt via the CLI, against a prompt on every rebuild
+via the native API. See [docs/auth.md](docs/auth.md).
 
-This is expected and **not** a bug. The app reads Claude Code's OAuth token,
-which the `claude` CLI stores as a login-keychain item. macOS guards every
-keychain item with an access-control list (ACL) that, by default, lists only
-the app that created it (the `claude` CLI). When ClaudeUsage — a different
-binary — reads the item, macOS asks you to authorize it.
-
-**Fix: click "Always Allow" (not just "Allow") and enter your password once.**
-That adds ClaudeUsage to the item's ACL permanently, and you won't be prompted
-on future launches.
-
-You can also pre-authorize it manually without waiting for the dialog:
-open **Keychain Access → search `Claude Code-credentials` → double-click → the
-"Access Control" tab → add `/Applications/ClaudeUsage.app`** to the allowed
-list.
-
-**Caveat — the prompt can return after a token refresh.** When your OAuth token
-auto-refreshes, the `claude` CLI deletes and re-creates the keychain item; the
-new item's ACL again lists only the CLI, so you'll be prompted once more. Click
-"Always Allow" again. This is infrequent (it tracks token refresh, not the
-60-second poll cycle — the app caches the token in memory between polls, so
-routine polling never prompts).
-
-**Why there's no code fix.** On this setup the token lives *only* in the
-keychain — there is no plaintext `~/.claude/.credentials.json` to read instead
-(`~/.claude.json` holds account metadata, not the token). The ACL prompt is the
-keychain's security model working as designed; no app-side change can bypass it
-without weakening that protection. "Always Allow" is the supported answer, and
-it is a local-machine authorization only — it changes nothing about the app's
-Terms-of-Service standing (see the ToS notice above).
+If you do see the dialog, the CLI read failed and the app fell back to the
+native API. Clicking "Always Allow" lasts until the next rebuild or token
+refresh. It is a local-machine authorization only and changes nothing about the
+app's Terms-of-Service standing (see the ToS notice above).
 
 ---
 
 ## Data flow
 
 ```
-Claude Code (claude CLI) login  →  keychain item "Claude Code-credentials"
+Claude Code (claude CLI) login
+        │   macOS: keychain item "Claude Code-credentials" (via /usr/bin/security)
+        │   Linux / Windows: ~/.claude/.credentials.json
+        ▼
+credential, cached in memory between polls
         │
         ▼
-AuthManager.accessToken
-        │
+usage poller thread (60 s)  →  POST api.anthropic.com/v1/messages (1 token)
+        │                        read anthropic-ratelimit-unified-5h/7d-* headers
+        │                        (429s carry them too)
         ▼
-UsagePoller (60 s)  →  POST api.anthropic.com/v1/messages (1 token)
-        │                 read anthropic-ratelimit-unified-5h/7d-* headers
-        ▼
-UsageStore (@Observable)  →  MenuBarLabel + PopoverView
+AppState  →  tray icon + popover (Tauri event)  →  history.csv on change
+        ▲
+status poller thread (5 min)  →  status.claude.com, independent of usage
 ```
 
 ---
 
-## Why macOS-only (no iOS / widget)
+## Why no iOS app or widget
 
 An iOS widget would need the Mac's usage values synced to the phone, since
 App Groups are per-device. The only viable sync (iCloud key-value store)
 **requires a paid Apple Developer account** — a free Personal Team cannot use
 the iCloud capability (Apple's tooling rejects it outright). With the
 free-Apple-ID constraint this project is built on, there's no path to a working
-iPhone widget, so the iOS app and widget were removed. The Mac menu-bar app is
+iPhone widget, so the iOS app and widget were removed. The desktop tray app is
 the deliverable.
 
 ---
